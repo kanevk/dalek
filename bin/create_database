@@ -1,0 +1,13 @@
+#!/usr/bin/env ruby
+
+require "bundler/setup"
+require "dalek"
+require 'pg'
+
+Bundler.require(:default)
+
+status = PG.connect(dbname: 'postgres').exec <<~SQL
+  CREATE DATABASE dalek_test
+SQL
+
+puts status.to_a
