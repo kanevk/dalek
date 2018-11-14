@@ -1,6 +1,10 @@
-module Dalek
+class Dalek
   module Utils
     extend self
+
+    def all_model_classes
+      ActiveRecord::Base.descendants.reject(&:abstract_class)
+    end
 
     def all_foreign_keys
       ActiveRecord::Base.connection.execute(<<~SQL).map { |data| OpenStruct.new(**data) }

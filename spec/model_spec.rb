@@ -6,9 +6,16 @@ RSpec.describe Dalek do
   end
 
   before(:all) do
+    connection.create_table :countries do |t|
+      t.string :name
+
+      t.timestamps null: false
+    end
+
     connection.create_table :users do |t|
       t.string :name, index: {unique:  true}, null: false
       t.belongs_to :parent_user, foreign_key: {to_table: :users}
+      t.belongs_to :country, foreign_key: true, null: false
 
       t.timestamps null: false
     end
@@ -43,19 +50,21 @@ RSpec.describe Dalek do
     connection.drop_table :posts
     connection.drop_table :avatars
     connection.drop_table :users
+    connection.drop_table :countries
   end
 
   before do
-    class User < ActiveRecord::Base
-      extend Dalek::Spy
+    class Country < ActiveRecord::Base
+    end
 
+    class User < ActiveRecord::Base
       has_many :posts
       has_many :comments
       has_many :commented_posts, through: :comments, source: :post
 
       has_many :child_users, class_name: 'User', foreign_key: :parent_user_id
 
-      hidden_association :has_many, :avatars
+      belongs_to :country
     end
 
     class Comment < ActiveRecord::Base
@@ -70,6 +79,7 @@ RSpec.describe Dalek do
     end
 
     class Avatar < ActiveRecord::Base
+      belongs_to :user
     end
   end
 
@@ -78,6 +88,7 @@ RSpec.describe Dalek do
     Object.send :remove_const, 'Post'
     Object.send :remove_const, 'User'
     Object.send :remove_const, 'Avatar'
+    Object.send :remove_const, 'Country'
   end
 
   id = 0
@@ -113,6 +124,7 @@ RSpec.describe Dalek do
 
   def create_user(save: true, **attrs)
     attrs[:name] ||= DF.call('Default User')
+    attrs[:country] ||= Country.create name: DF.call('Some-countria')
 
     User.new(**attrs).tap do |model|
       model.save! if save
@@ -132,10 +144,8 @@ RSpec.describe Dalek do
   end
 
   def build_delete_user_service(deletion_tree = {})
-    Class.new do
-      include Dalek::Exterminate
-
-      extermination_plan 'User', deletion_tree
+    Class.new(Dalek) do
+      extermination_schema 'User', deletion_tree
     end
   end
 
@@ -143,7 +153,7 @@ RSpec.describe Dalek do
     it 'deletes the records by default' do
       user = create_user
 
-      build_delete_user_service.execute user
+      build_delete_user_service.exterminate user
 
       expect { user.reload }.to raise_error ActiveRecord::RecordNotFound
     end
@@ -151,7 +161,7 @@ RSpec.describe Dalek do
     it 'skips the records with :skip handler' do
       user = create_user
 
-      build_delete_user_service(:skip).execute user
+      build_delete_user_service(:skip).exterminate user
 
       expect(user.reload).to be_present
     end
@@ -160,7 +170,7 @@ RSpec.describe Dalek do
       user = create_user
       comment = create_comment user: user
 
-      build_delete_user_service(comments: :delete).execute user
+      build_delete_user_service(comments: :delete).exterminate user
 
       expect { comment.reload }.to raise_error ActiveRecord::RecordNotFound
     end
@@ -169,7 +179,7 @@ RSpec.describe Dalek do
       user = create_user
       avatar = create_avatar user_id: user.id
 
-      build_delete_user_service(avatars: :delete).execute user
+      build_delete_user_service([:avatars, foreign_key: :user_id] => :delete).exterminate user
 
       expect { avatar.reload }.to raise_error ActiveRecord::RecordNotFound
     end
@@ -179,7 +189,7 @@ RSpec.describe Dalek do
       expected_user = nil
       handler = ->(fetched_users) { expected_user = fetched_users.first }
 
-      build_delete_user_service(_handler: handler).execute user
+      build_delete_user_service(_handler: handler).exterminate user
 
       expect(user).to eq expected_user
     end
@@ -190,21 +200,37 @@ RSpec.describe Dalek do
       expected_posts = nil
       posts_handler = ->(fetched_posts) { expected_posts = fetched_posts }
 
-      build_delete_user_service(posts: posts_handler, _handler: :skip).execute user
+      build_delete_user_service(posts: posts_handler, _handler: :skip).exterminate user
 
       expect(posts.map(&:id)).to match_array(expected_posts.map(&:id))
     end
 
     it 'works with associations to own table' do
-      user = create_user
+      grand_user = create_user
+      user = create_user(parent_user_id: grand_user.id)
       child_users = [create_user(parent_user_id: user.id)]
       expected_users = nil
-      inner_handler = ->(fetched_users) { expected_users = fetched_users }
+      inner_handler = ->(fetched_users) { expected_users = fetched_users.to_a }
 
-      build_delete_user_service(child_users: inner_handler, _handler: :skip).execute user
-
+      build_delete_user_service(child_users: inner_handler, _handler: :skip).exterminate user
 
       expect(child_users.map(&:id)).to match_array(expected_users.map(&:id))
+    end
+
+    it 'works with belongs to associations' do
+      country = Country.new(name: :name)
+      user = create_user country: country
+
+      # TODO: Find better way to use belongs to associations!
+      handler = lambda do |countries|
+        countries_ids = countries.ids
+        User.where(country: countries_ids).delete_all
+        Country.where(id: countries_ids).delete_all
+      end
+
+      build_delete_user_service(countries: handler, _handler: :skip).exterminate user
+
+      expect { country.reload }.to raise_error(ActiveRecord::RecordNotFound)
     end
   end
 
@@ -215,13 +241,13 @@ RSpec.describe Dalek do
 
       expect(remote_api).to receive(:call)
 
-      build_delete_user_service(_before: remote_api.method(:call)).execute user
+      build_delete_user_service(_before: remote_api.method(:call)).exterminate user
     end
 
-    it "doesn't delete the record if before callback return falsy value" do
+    it "doesn't delete the record if before callback returns false value" do
       user = create_user
 
-      build_delete_user_service(_before: ->(_) { nil }).execute user
+      build_delete_user_service(_before: ->(_) { false }).exterminate user
 
       expect { user.reload }.not_to raise_error
     end

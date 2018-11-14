@@ -13,9 +13,9 @@ But not yet! To be uploaded...
 
 Describing the deletions as a data structure
 ```ruby
-class DeleteUser < Dalek::Exterminate
-  deletion_tree '', {
-    _before: lambda { @target.active? },
+class DeleteUser < Dalek
+  deletion_tree 'User', {
+    _before: ->(users) { users.none(&:active?) },
     posts: {
       comments: {commented_posts: :delete},
     },
@@ -33,6 +33,6 @@ Extermination
 ```
 
 
-# Materials
+# Related materials
 http://nithinbekal.com/posts/ruby-tco/
 https://robots.thoughtbot.com/referential-integrity-with-foreign-keys
