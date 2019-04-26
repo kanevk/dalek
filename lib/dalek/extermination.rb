@@ -1,6 +1,6 @@
 class Dalek
   class Extermination
-    ScopeOptions = Struct.new(:table_name, :parent_reference_column, :reference_column, :model_class, keyword_init: true) do
+    ScopeOptions = Struct.new(:table_name, :parent_reference_column, :reference_column, :where, :where_not, :model_class, keyword_init: true) do
       def self.from_records(model_class, _records)
         new(
           table_name: model_class.table_name,
@@ -18,16 +18,16 @@ class Dalek
                               :sub_trees,
                               keyword_init: true)
 
-    def initialize(targets, deletion_tree, context:, target_class:)
+    def initialize(targets, deletion_tree, context:, table_name:)
       @targets = targets
       @deletion_tree = deletion_tree
       @context = context
-      @target_class = target_class
+      @target_class = model_by_table_name.fetch(table_name)
     end
 
     def call
       execute_recursively parse_deletion_tree(ScopeOptions.from_records(@target_class, @targets),
-                                            @deletion_tree),
+                                              @deletion_tree),
                           scope: @target_class.where(id: @targets)
     end
 
@@ -81,18 +81,23 @@ class Dalek
 
     def build_scope_options(parent_scope_options, table_or_association_name, raw_scope_options)
       reflection = find_reflection(parent_scope_options.model_class, table_or_association_name)
+
       if reflection.nil?
         ScopeOptions.new(
           table_name: table_or_association_name,
-          parent_reference_column: raw_scope_options[:primary_key] || :id,
-          reference_column: raw_scope_options[:foreign_key],
-          model_class: model_by_table_name[table_or_association_name]
+          parent_reference_column: raw_scope_options.fetch(:primary_key, :id),
+          reference_column: raw_scope_options.fetch(:foreign_key),
+          where: raw_scope_options[:where],
+          where_not: raw_scope_options[:where_not],
+          model_class: model_by_table_name.fetch(table_or_association_name)
         )
       elsif reflection.belongs_to?
         ScopeOptions.new(
           table_name: reflection.table_name.to_sym,
           parent_reference_column: reflection.foreign_key,
           reference_column: reflection.active_record_primary_key,
+          where: raw_scope_options[:where],
+          where_not: raw_scope_options[:where_not],
           model_class: reflection.klass
         )
       else
@@ -100,6 +105,8 @@ class Dalek
           table_name: reflection.table_name.to_sym,
           parent_reference_column: reflection.association_primary_key,
           reference_column: reflection.foreign_key,
+          where: raw_scope_options[:where],
+          where_not: raw_scope_options[:where_not],
           model_class: reflection.klass
         )
       end
@@ -112,13 +119,14 @@ class Dalek
     end
 
     def scope_for(parent_scope, scope_options)
-      scope_options.model_class.where(
+      scope = scope_options.model_class.where(
         scope_options.reference_column => parent_scope.select(scope_options.parent_reference_column)
       )
-    end
 
-    def target_model
-      Object.const_get self.class.model_class_name
+      scope = scope.where(scope_options.where) if scope_options.where
+      scope = scope.where.not(scope_options.where_not) if scope_options.where_not
+
+      scope
     end
 
     def model_by_table_name

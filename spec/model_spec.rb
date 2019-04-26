@@ -143,113 +143,300 @@ RSpec.describe Dalek do
     end
   end
 
-  def build_delete_user_service(deletion_tree = {})
+  def build_delete_user_service(deletion_tree = nil, &block)
     Class.new(Dalek) do
-      extermination_schema 'User', deletion_tree
+      delete :users, deletion_tree, &block
     end
   end
 
-  describe 'the handler' do
-    it 'deletes the records by default' do
-      user = create_user
+  context 'when using data structure deletion schema' do
+    describe 'the handler' do
+      it 'deletes the records by default' do
+        user = create_user
 
-      build_delete_user_service.exterminate user
+        build_delete_user_service({}).exterminate user
 
-      expect { user.reload }.to raise_error ActiveRecord::RecordNotFound
-    end
-
-    it 'skips the records with :skip handler' do
-      user = create_user
-
-      build_delete_user_service(:skip).exterminate user
-
-      expect(user.reload).to be_present
-    end
-
-    it 'deletes the associated records through has_many relation' do
-      user = create_user
-      comment = create_comment user: user
-
-      build_delete_user_service(comments: :delete).exterminate user
-
-      expect { comment.reload }.to raise_error ActiveRecord::RecordNotFound
-    end
-
-    it 'deletes the associated records through hidden association' do
-      user = create_user
-      avatar = create_avatar user_id: user.id
-
-      build_delete_user_service([:avatars, foreign_key: :user_id] => :delete).exterminate user
-
-      expect { avatar.reload }.to raise_error ActiveRecord::RecordNotFound
-    end
-
-    it 'works with custom handler' do
-      user = create_user
-      expected_user = nil
-      handler = ->(fetched_users) { expected_user = fetched_users.first }
-
-      build_delete_user_service(_handler: handler).exterminate user
-
-      expect(user).to eq expected_user
-    end
-
-    it 'works with custom handler for inner tables' do
-      user = create_user
-      posts = [create_post(user: user), create_post(user: user)]
-      expected_posts = nil
-      posts_handler = ->(fetched_posts) { expected_posts = fetched_posts }
-
-      build_delete_user_service(posts: posts_handler, _handler: :skip).exterminate user
-
-      expect(posts.map(&:id)).to match_array(expected_posts.map(&:id))
-    end
-
-    it 'works with associations to own table' do
-      grand_user = create_user
-      user = create_user(parent_user_id: grand_user.id)
-      child_users = [create_user(parent_user_id: user.id)]
-      expected_users = nil
-      inner_handler = ->(fetched_users) { expected_users = fetched_users.to_a }
-
-      build_delete_user_service(child_users: inner_handler, _handler: :skip).exterminate user
-
-      expect(child_users.map(&:id)).to match_array(expected_users.map(&:id))
-    end
-
-    it 'works with belongs to associations' do
-      country = Country.new(name: :name)
-      user = create_user country: country
-
-      # TODO: Find better way to use belongs to associations!
-      handler = lambda do |countries|
-        countries_ids = countries.ids
-        User.where(country: countries_ids).delete_all
-        Country.where(id: countries_ids).delete_all
+        expect { user.reload }.to raise_error ActiveRecord::RecordNotFound
       end
 
-      build_delete_user_service(countries: handler, _handler: :skip).exterminate user
+      it 'skips the records with :skip handler' do
+        user = create_user
 
-      expect { country.reload }.to raise_error(ActiveRecord::RecordNotFound)
+        build_delete_user_service(:skip).exterminate user
+
+        expect(user.reload).to be_present
+      end
+
+      it 'deletes the associated records through has_many relation' do
+        user = create_user
+        comment = create_comment user: user
+
+        build_delete_user_service(comments: :delete).exterminate user
+
+        expect { comment.reload }.to raise_error ActiveRecord::RecordNotFound
+      end
+
+      it 'deletes the associated records through hidden association' do
+        user = create_user
+        avatar = create_avatar user_id: user.id
+
+        build_delete_user_service([:avatars, foreign_key: :user_id] => :delete).exterminate user
+
+        expect { avatar.reload }.to raise_error ActiveRecord::RecordNotFound
+      end
+
+      it 'works with custom handler' do
+        user = create_user
+        expected_user = nil
+        handler = ->(fetched_users) { expected_user = fetched_users.first }
+
+        build_delete_user_service(_handler: handler).exterminate user
+
+        expect(user).to eq expected_user
+      end
+
+      it 'works with custom handler for inner tables' do
+        user = create_user
+        posts = [create_post(user: user), create_post(user: user)]
+        expected_posts = nil
+        posts_handler = ->(fetched_posts) { expected_posts = fetched_posts }
+
+        build_delete_user_service(posts: posts_handler, _handler: :skip).exterminate user
+
+        expect(posts.map(&:id)).to match_array(expected_posts.map(&:id))
+      end
+
+      it 'works with associations to own table' do
+        grand_user = create_user
+        user = create_user(parent_user_id: grand_user.id)
+        child_users = [create_user(parent_user_id: user.id)]
+        expected_users = nil
+        inner_handler = ->(fetched_users) { expected_users = fetched_users.to_a }
+
+        build_delete_user_service(child_users: inner_handler, _handler: :skip).exterminate user
+
+        expect(child_users.map(&:id)).to match_array(expected_users.map(&:id))
+      end
+
+      it 'works with belongs to associations' do
+        country = Country.new(name: :name)
+        user = create_user country: country
+
+        # TODO: Find better way to use belongs to associations!
+        handler = lambda do |countries|
+          countries_ids = countries.ids
+          User.where(country: countries_ids).delete_all
+          Country.where(id: countries_ids).delete_all
+        end
+
+        build_delete_user_service(countries: handler, _handler: :skip).exterminate user
+
+        expect { country.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+    end
+
+    describe 'before callbacks' do
+      it 'triggers before callback' do
+        user = create_user
+        remote_api = double call: nil
+
+        expect(remote_api).to receive(:call)
+
+        build_delete_user_service(_before: remote_api.method(:call)).exterminate user
+      end
+
+      it "doesn't delete the record if before callback returns false value" do
+        user = create_user
+
+        build_delete_user_service(_before: ->(_) { false }).exterminate user
+
+        expect { user.reload }.not_to raise_error
+      end
     end
   end
 
-  describe 'before callbacks' do
-    it 'triggers before callback' do
-      user = create_user
-      remote_api = double call: nil
+  context 'when using DSL deletion schema' do
+    describe 'the handler' do
+      it 'deletes the records by default' do
+        user = create_user
 
-      expect(remote_api).to receive(:call)
+        build_delete_user_service() {}.exterminate user
 
-      build_delete_user_service(_before: remote_api.method(:call)).exterminate user
+        expect { user.reload }.to raise_error ActiveRecord::RecordNotFound
+      end
+
+      it 'skips the records with :skip handler' do
+        post = create_post
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          skip :posts
+        end.exterminate post.user
+
+        expect(post.reload).to be_present
+      end
+
+      it 'deletes the associated records through has_many relation' do
+        user = create_user
+        comment = create_comment user: user
+
+        build_delete_user_service { delete :comments }.exterminate user
+
+        expect { comment.reload }.to raise_error ActiveRecord::RecordNotFound
+      end
+
+      it 'deletes the associated records through hidden association' do
+        user = create_user
+        avatar = create_avatar user_id: user.id
+
+        build_delete_user_service { delete :avatars, foreign_key: :user_id }.exterminate user
+
+        expect { avatar.reload }.to raise_error ActiveRecord::RecordNotFound
+      end
+
+      it "works with 'on_resolve' handler" do
+        user = create_user
+        expected_user = nil
+
+        build_delete_user_service do
+          on_resolve { |fetched_users| expected_user = fetched_users.first }
+        end.exterminate user
+
+        expect(user).to eq expected_user
+      end
+
+      it 'works with custom handler for inner tables' do
+        user = create_user
+        posts = [create_post(user: user), create_post(user: user)]
+        expected_posts = nil
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          resolve(:posts) { |fetched_posts| expected_posts = fetched_posts }
+        end.exterminate user
+
+        expect(posts.map(&:id)).to match_array(expected_posts.map(&:id))
+      end
+
+      it 'works with associations to own table' do
+        grand_user = create_user
+        user = create_user(parent_user_id: grand_user.id)
+        child_users = [create_user(parent_user_id: user.id)]
+        expected_users = nil
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          resolve(:child_users) { |fetched_users| expected_users = fetched_users.to_a }
+        end.exterminate user
+
+        expect(child_users.map(&:id)).to match_array(expected_users.map(&:id))
+      end
+
+      it 'works with belongs to associations' do
+        country = Country.new(name: :name)
+        user = create_user country: country
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          # TODO: Find better way to use belongs to associations!
+          resolve :countries do |countries|
+            countries_ids = countries.ids
+            User.where(country: countries_ids).delete_all
+            Country.where(id: countries_ids).delete_all
+          end
+        end.exterminate user
+
+        expect { country.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
     end
 
-    it "doesn't delete the record if before callback returns false value" do
-      user = create_user
+    describe 'before callbacks' do
+      it 'triggers before callback' do
+        user = create_user
+        remote_api = double call: nil
 
-      build_delete_user_service(_before: ->(_) { false }).exterminate user
+        expect(remote_api).to receive(:call)
 
-      expect { user.reload }.not_to raise_error
+        build_delete_user_service { before { remote_api.call } }.exterminate user
+      end
+
+      it "doesn't delete the record if before callback returns false value" do
+        user = create_user
+
+        build_delete_user_service { before { false } }.exterminate user
+
+        expect { user.reload }.not_to raise_error
+      end
+    end
+
+    describe 'after callbacks' do
+      it 'triggers with correct scope' do
+        user = create_user
+        expected_user_id = user.id
+        fetched_user_id = nil
+
+        build_delete_user_service do
+          after { |users| fetched_user_id = users.first.id }
+        end.exterminate user
+
+        expect(fetched_user_id).to eq expected_user_id
+      end
+    end
+
+    describe 'scope options' do
+      it "deletes only records matched by the 'where' hash" do
+        user = create_user
+        post = create_post(user: user, title: 'title')
+
+        build_delete_user_service do
+          delete :posts, where: {title: 'title'}
+        end.exterminate user
+
+        expect { post.reload }.to raise_error(ActiveRecord::RecordNotFound)
+      end
+
+      it "doesn't delete records not matched by the 'where' hash" do
+        user = create_user
+        post = create_post(user: user, title: 'title')
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          delete :posts, where: {title: 'different title'}
+        end.exterminate user
+
+        expect { post.reload }.not_to raise_error
+      end
+
+      it "finds the records matched by the 'where' hash" do
+        user = create_user
+        post = create_post(user: user, title: 'title')
+        fetched_post_id = nil
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          resolve :posts, where: {title: 'title'} do |posts|
+            fetched_post_id = posts.first.id
+          end
+        end.exterminate user
+
+        expect(fetched_post_id).to eq post.id
+      end
+
+      it "skips the records matched by the 'where_not' hash" do
+        user = create_user
+        create_post(user: user, title: 'title')
+
+        fetched_posts = nil
+
+        build_delete_user_service do
+          on_resolve(&:itself)
+          resolve :posts, where_not: {title: 'title'} do |posts|
+            fetched_posts = posts
+          end
+        end.exterminate user
+
+        expect(fetched_posts).to eq []
+      end
     end
   end
 end
